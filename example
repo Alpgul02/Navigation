@@ -1,0 +1,153 @@
+import cv2 as cv
+import numpy as np
+from os.path import sep
+
+cap = cv.VideoCapture(0 + cv.CAP_DSHOW)
+cap.set(cv.CAP_PROP_FRAME_WIDTH, 1920)
+cap.set(cv.CAP_PROP_FRAME_HEIGHT, 1080)
+cap.set(cv.CAP_PROP_FPS, 30)
+imgTarget = cv.imread('photos' + sep + 's.jpg')  # bu resmimiz
+myVid = cv.VideoCapture('photos' + sep + 'Baslksz-3.mp4', cv.IMREAD_UNCHANGED)
+
+detection = False
+frameCounter = 0
+imgVideo = cap.read()
+success, imgVideo = myVid.read()
+hT, wT, cT = imgTarget.shape  # burada resmimizin yüksekliğini, kalınlığını genişliğini falan alıyoruz.
+'''while myVid.isOpened():
+    success, Video = myVid.read()
+    if success:
+        Video = cv.resize(Video, (wT, hT))'''
+        
+RED =0
+GREEN =0
+BLUE =0
+ALPHA = 255
+
+# burada key points yani böyle önemli bölgeler, köşeler gibi yerleri beliriliyoruz.
+orb = cv.ORB_create(nfeatures=10000)
+kp1, des1 = orb.detectAndCompute(imgTarget, None)
+cap.read()
+detectiona = False
+whT = 320
+confThreshold =0.5
+nmsThreshold= 0.2
+#### LOAD MODEL
+## Coco Names
+classesFile = "_annotations.coco.json"
+classNames = []
+with open(classesFile, 'rt') as f:
+    classNames = f.read().rstrip('\n').split('\n')
+print(classNames)
+## Model Files
+modelConfiguration = "yolov3-320.cfg"
+modelWeights = "yolov3-320.weights"
+net = cv.dnn.readNetFromDarknet(modelConfiguration, modelWeights)
+net.setPreferableBackend(cv.dnn.DNN_BACKEND_OPENCV)
+net.setPreferableTarget(cv.dnn.DNN_TARGET_CPU)
+def findObjects(outputs,img):
+    hT, wT, cT = img.shape
+    bbox = []
+    classIds = []
+    confs = []
+    for output in outputs:
+        for det in output:
+            scores = det[5:]
+            classId = np.argmax(scores)
+            confidence = scores[classId]
+            if confidence > confThreshold:
+                w,h = int(det[2]*wT) , int(det[3]*hT)
+                x,y = int((det[0]*wT)-w/2) , int((det[1]*hT)-h/2)
+                bbox.append([x,y,w,h])
+                classIds.append(classId)
+                confs.append(float(confidence))
+    indices = cv.dnn.NMSBoxes(bbox, confs, confThreshold, nmsThreshold)
+    for i in indices:
+        i = i[0]
+        box = bbox[i]
+        x, y, w, h = box[0], box[1], box[2], box[3]
+        # print(x,y,w,h)
+        cv.rectangle(img, (x, y), (x+w,y+h), (255, 0 , 255), 2)
+        #cv.putText(img,f'{classNames[classIds[i]].upper()} {int(confs[i]*100)}%',
+                  #(x, y-10), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+        print('success')
+        #myVid.isOpened()
+
+while cap.isOpened():  # burada webcam ile fotoğrafları birleştircez.
+    sucess, imgWebcam = cap.read()
+    imgAug = imgWebcam.copy()
+    # burada key points yani böyle önemli bölgeler, köşeler gibi yerleri beliriliyoruz.
+    kp2, des2 = orb.detectAndCompute(imgWebcam,
+                                     None)  # imgwebcami myvid yapıp değiştir o zaman oldu .d tek seferliktir belki?
+    # imgWebcam = cv2.drawKeypoints(imgWebcam, kp2, None)
+
+    if detection == False:
+        myVid.set(cv.CAP_PROP_POS_FRAMES, 0)
+        frameCounter = 0
+    else:
+        if frameCounter == myVid.get(cv.CAP_PROP_FRAME_COUNT):
+            myVid.set(cv.CAP_PROP_POS_FRAMES, 0)
+            frameCounter = 0
+        success, imgVideo = myVid.read()
+        imgVideo = cv.resize(imgVideo, (wT, hT))
+    
+    # burada ise matches yani webcam resmi ile fotoğrafımız arasındaki benzerlikleri alıyoruz.
+    bf = cv.BFMatcher()
+    matches = bf.knnMatch(des1, des2, k=2)
+    good = []
+    for m, n in matches:
+        if m.distance < 0.75 * n.distance:
+            good.append(m)
+    print(len(good))
+    imgFeatures = cv.drawMatches(imgTarget, kp1, imgWebcam, kp2, good, None, flags=2)
+
+    if len(good) > 20:  # burada eğer anahtar bölgelerimiz 20 den fazla şekilde uyuşuyorsa, tanımlama(detection) tamamlanmış oluyor.
+        detection = True
+        srcPts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+        dstPts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+        matrix, mask = cv.findHomography(srcPts, dstPts, cv.RANSAC, 5)
+        print(matrix)
+
+        # eşleşine resmin etrafını çiziyoruz
+        pts = np.float32([[0, 0], [0, hT], [wT, hT], [wT, 0]]).reshape(-1, 1, 2)
+        #pts = np.float32([[0, 0], [0, 100], [50, 100], [50, 0]]).reshape(-1, 1, 2)
+        dst = cv.perspectiveTransform(pts, matrix)
+        img2 = cv.polylines(imgWebcam, [np.int32(dst)], True, (255, 0, 255), 3)
+
+        # burada videomuzu, webcam resmimiz ile aynı boyuta getiriyoruz.
+        imgWarp = cv.warpPerspective(imgVideo, matrix, (imgWebcam.shape[1], imgWebcam.shape[0]))
+        #cv.imshow("imgWarp", imgWarp)
+        
+        #maskNew = np.zeros((imgWebcam.shape[0],imgWebcam.shape[1]),np.uint8)
+        #cv.fillPoly(maskNew,[np.int32(dst)],(255,255,255))        
+        trasn_mask = myVid[:,:,3 ]==0
+        myVid[trasn_mask]=[BLUE, GREEN, RED, ALPHA]
+        maskNew = np.zeros((imgWebcam.shape[0],imgWebcam.shape[1]),np.uint8)
+        cv.fillPoly(maskNew,[np.int32(dst)],(255,255,255))
+        maskInv = cv.bitwise_not(maskNew)
+        imgAug = cv.bitwise_and(imgAug,imgAug,mask = maskInv)
+        imgAug = cv.bitwise_or(imgWarp,imgAug)
+
+        success, img = cap.read()
+        detectiona = True
+        #BURADA OK VİDEOSU OYNATILACAK
+        #if not decetiona diye dene yarın.
+        blob = cv.dnn.blobFromImage(img, 1 / 255, (whT, whT), [0, 0, 0], 1, crop=False)
+        net.setInput(blob)
+        layersNames = net.getLayerNames()
+        outputNames = [(layersNames[i[0] - 1]) for i in net.getUnconnectedOutLayers()]
+        outputs = net.forward(outputNames)
+        findObjects(outputs,img)
+        cv.imshow('Image', img)
+        #imgStacked = stackImages(([imgWebcam,imgVideo,imgTarget],[imgFeatures,imgWarp,imgAug]),0.5)
+        cv.imshow('maskNew', imgAug)
+        #cv.imshow('imgWarp', imgWarp)
+        cv.imshow('img2', img2)
+        #cv.imshow('imgFeatures', imgFeatures)
+        #cv.imshow('ImgTarget',imgTarget)
+        #cv.imshow('myVid',imgVideo)
+        #cv.imshow('Webcam', imgWebcam)
+        #cv.imshow('imgStacked', imgStacked)
+        
+    cv.waitKey(1)
+    frameCounter +=1
